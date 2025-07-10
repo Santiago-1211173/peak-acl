@@ -78,6 +78,9 @@ class HttpMtpClient:
 
         while True:
             try:
+                headers = {
+                     "Content-Type": f'multipart/mixed; boundary="BOUNDARY123"'
+                }
                 async with self.session.post(acc_url, data=writer) as resp:
                     if resp.status == 200:
                         _LOG.info("Enviado para %s (status 200)", acc_url)

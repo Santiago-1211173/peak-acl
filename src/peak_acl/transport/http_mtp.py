@@ -53,7 +53,6 @@ class HttpMtpServer:
     ):
         self._on_message = on_message
 
-        # composição – criamos a *web.Application*, mas não herdamos dela
         self.app: web.Application = web.Application(
             client_max_size=client_max_size, loop=loop
         )
