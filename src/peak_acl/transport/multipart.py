@@ -10,24 +10,38 @@ from ..message.envelope import Envelope
 from ..message.acl import AclMessage
 
 
-def build_multipart(to_ai: AgentIdentifier,
-                    from_ai: AgentIdentifier,
-                    msg: AclMessage) -> Tuple[MultipartWriter, str]:
+
+CRLF = "\r\n"
+
+
+def build_multipart(
+    to_ai: AgentIdentifier,
+    from_ai: AgentIdentifier,
+    msg: AclMessage,
+) -> Tuple[bytes, str]:
+    """Corpo multipart já pronto + boundary usado."""
     acl_str = dumps(msg)
-    env = Envelope(...)
+    env = Envelope(
+        to_=to_ai,
+        from_=from_ai,
+        date=datetime.now(timezone.utc),
+        payload_length=len(acl_str.encode()),
+    )
 
-    boundary = f"BOUNDARY-{uuid.uuid4().hex[:16]}"
-    writer   = MultipartWriter("mixed", boundary=boundary)
+    boundary = f"BOUNDARY-{uuid.uuid4().hex[:12]}"
+    parts = [
+        f"--{boundary}",
+        "Content-Type: application/xml",
+        "",
+        env.to_xml(),
+        f"--{boundary}",
+        "Content-Type: text/plain",
+        "",
+        acl_str,
+        f"--{boundary}--",
+        "",
+    ]
+    body = CRLF.join(parts).encode("utf-8")
 
-    writer.append(env.to_xml(),
-                  headers={"Content-Type": "application/xml",
-                           "Content-Disposition": 'attachment; name="envelope"'})
-    writer.append(acl_str,
-                  headers={"Content-Type": "text/plain",
-                           "Content-Disposition": 'attachment; name="acl-message"'})
-
-    # -- remove o header default e coloca a versão com ASPAS
-    del writer.headers[hdrs.CONTENT_TYPE]
-    writer.headers[hdrs.CONTENT_TYPE] = f'multipart/mixed; boundary="{boundary}"'
-
-    return writer, boundary
+    header = f'multipart/mixed; boundary="{boundary}"'
+    return body, header

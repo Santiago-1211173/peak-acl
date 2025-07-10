@@ -71,7 +71,14 @@ class HttpMtpClient:
         delay = self.backoff_base
         while True:
             try:
-                async with self.session.post(acc_url, data=writer) as resp:
+                body, ctype = build_multipart(to_ai, from_ai, acl_msg)
+                headers = {
+                    "Content-Type": ctype,
+                    "Cache-Control": "no-cache",
+                    "Mime-Version": "1.0"
+                }
+
+                async with self.session.post(acc_url, data=body, headers=headers) as resp:
                     if resp.status == 200:
                         _LOG.info("Enviado para %s (status 200)", acc_url)
                         return
