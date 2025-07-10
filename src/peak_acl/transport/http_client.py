@@ -58,7 +58,6 @@ class HttpMtpClient:
             timeout=ClientTimeout(total=timeout)
         )
 
-    # ------------------------------------------------------------------
     async def send(
         self,
         to_ai: AgentIdentifier,
@@ -66,22 +65,19 @@ class HttpMtpClient:
         acl_msg: AclMessage,
         acc_url: str,
     ) -> None:
-        """
-        Envia a mensagem ACL *acl_msg* para o ACC remoto *acc_url*.
-
-        Lança HttpMtpError se falhar após *retries*.
-        """
         writer, _ = build_multipart(to_ai, from_ai, acl_msg)
 
         attempt = 0
         delay = self.backoff_base
-
         while True:
             try:
-                headers = {
-                     "Content-Type": f'multipart/mixed; boundary="BOUNDARY123"'
-                }
-                async with self.session.post(acc_url, data=writer, headers=headers) as resp:
+                # ── NENHUM cabeçalho extra: já vai no writer.headers ──
+                async with self.session.post(acc_url, data=writer) as resp:
+                    if resp.status == 200:
+                        _LOG.info("Enviado para %s (status 200)", acc_url)
+                        return
+                    raise HttpMtpError(f"ACC devolveu {resp.status}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                     if resp.status == 200:
                         _LOG.info("Enviado para %s (status 200)", acc_url)
                         return
