@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "peak-acl"
+version = "0.1.0"
+description = "FIPA-ACL parser and transport for the PEAK framework"
+authors = [{ name = "Santiago Bossa", email = "1211173@isep.ipp.pt"}]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "antlr4-python3-runtime>=4.13",
+    "aiohttp >= 3.9",
+    "datetime >= 4.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "black", "isort", "mypy"]

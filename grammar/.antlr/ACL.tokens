@@ -1,0 +1,9 @@
+LPAREN=1
+RPAREN=2
+COLON=3
+STRING=4
+SYMBOL=5
+WS=6
+'('=1
+')'=2
+':'=3

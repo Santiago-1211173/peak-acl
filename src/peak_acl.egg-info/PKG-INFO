@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: peak-acl
+Version: 0.1.0
+Summary: FIPA-ACL parser and transport for the PEAK framework
+Author-email: Santiago Bossa <1211173@isep.ipp.pt>
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: antlr4-python3-runtime>=4.13
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: datetime>=4.7
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: isort; extra == "dev"
+Requires-Dist: mypy; extra == "dev"

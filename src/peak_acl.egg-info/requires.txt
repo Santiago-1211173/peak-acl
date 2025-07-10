@@ -1,0 +1,10 @@
+antlr4-python3-runtime>=4.13
+aiohttp>=3.9
+datetime>=4.7
+
+[dev]
+pytest
+pytest-asyncio
+black
+isort
+mypy
