@@ -10,46 +10,24 @@ from ..message.envelope import Envelope
 from ..message.acl import AclMessage
 
 
-def build_multipart(
-    to_ai: AgentIdentifier,
-    from_ai: AgentIdentifier,
-    msg: AclMessage,
-) -> Tuple[MultipartWriter, str]:
-    """Devolve (writer, boundary) com o Content-Type já correcto."""
+def build_multipart(to_ai: AgentIdentifier,
+                    from_ai: AgentIdentifier,
+                    msg: AclMessage) -> Tuple[MultipartWriter, str]:
     acl_str = dumps(msg)
+    env = Envelope(...)
 
-    env = Envelope(
-        to_=to_ai,
-        from_=from_ai,
-        date=datetime.now(timezone.utc),
-        payload_length=len(acl_str.encode()),
-    )
-
-    # -------- boundary explícito  -----------------------------------
     boundary = f"BOUNDARY-{uuid.uuid4().hex[:16]}"
-    writer = MultipartWriter("mixed", boundary=boundary)
+    writer   = MultipartWriter("mixed", boundary=boundary)
 
-    # part 1: envelope XML
-    writer.append(
-        env.to_xml(),
-        headers={
-            "Content-Type": "application/xml",
-            "Content-Disposition": 'attachment; name="envelope"; filename="envelope.xml"',
-        },
-    )
+    writer.append(env.to_xml(),
+                  headers={"Content-Type": "application/xml",
+                           "Content-Disposition": 'attachment; name="envelope"'})
+    writer.append(acl_str,
+                  headers={"Content-Type": "text/plain",
+                           "Content-Disposition": 'attachment; name="acl-message"'})
 
-    # part 2: ACL string
-    writer.append(
-        acl_str,
-        headers={
-            "Content-Type": "text/plain",
-            "Content-Disposition": 'attachment; name="acl-message"; filename="acl.txt"',
-        },
-    )
-
-    # -------- header Content-Type COM aspas --------------------------
-    writer.headers[hdrs.CONTENT_TYPE] = (
-        f'multipart/mixed; boundary="{boundary}"'
-    )
+    # -- remove o header default e coloca a versão com ASPAS
+    del writer.headers[hdrs.CONTENT_TYPE]
+    writer.headers[hdrs.CONTENT_TYPE] = f'multipart/mixed; boundary="{boundary}"'
 
     return writer, boundary

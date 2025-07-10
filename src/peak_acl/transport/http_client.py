@@ -71,7 +71,6 @@ class HttpMtpClient:
         delay = self.backoff_base
         while True:
             try:
-                # ── NENHUM cabeçalho extra: já vai no writer.headers ──
                 async with self.session.post(acc_url, data=writer) as resp:
                     if resp.status == 200:
                         _LOG.info("Enviado para %s (status 200)", acc_url)
