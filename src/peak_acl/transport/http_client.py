@@ -65,25 +65,19 @@ class HttpMtpClient:
         acl_msg: AclMessage,
         acc_url: str,
     ) -> None:
-        writer, _ = build_multipart(to_ai, from_ai, acl_msg)
+
+        body, ctype = build_multipart(to_ai, from_ai, acl_msg)
+        headers = {
+            "Content-Type": ctype,
+            "Cache-Control": "no-cache",
+            "Mime-Version": "1.0",
+        }
 
         attempt = 0
         delay = self.backoff_base
         while True:
             try:
-                body, ctype = build_multipart(to_ai, from_ai, acl_msg)
-                headers = {
-                    "Content-Type": ctype,
-                    "Cache-Control": "no-cache",
-                    "Mime-Version": "1.0"
-                }
-
                 async with self.session.post(acc_url, data=body, headers=headers) as resp:
-                    if resp.status == 200:
-                        _LOG.info("Enviado para %s (status 200)", acc_url)
-                        return
-                    raise HttpMtpError(f"ACC devolveu {resp.status}")
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                     if resp.status == 200:
                         _LOG.info("Enviado para %s (status 200)", acc_url)
                         return
@@ -95,7 +89,6 @@ class HttpMtpClient:
                         f"Falhou após {self.retries} tentativas: {exc}"
                     ) from exc
 
-                # back-off exponencial com jitter
                 jitter = random.uniform(0, 0.3 * delay)
                 _LOG.warning("Tentativa %d falhou (%s); retry em %.1fs",
                              attempt, exc, delay + jitter)
