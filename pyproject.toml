@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peak-acl"
-version = "0.2.1"
+version = "0.2.2"
 description = "FIPA-ACL parser and transport for the PEAK framework"
 authors = [{ name = "Santiago Bossa", email = "1211173@isep.ipp.pt"}]
 readme = "README.md"

@@ -135,10 +135,15 @@ async def search_services(
 # ------------------------------------------------------------------ #
 def decode_df_reply(msg: AclMessage):
     """
-    Converte msg.content (string) -> AST SL0; devolve Done/Failure/Result
-    ou string original se parsing falhar.
+    Converte msg.content -> AST SL0; lida com ContentElementList.
+    Retorna:
+        sl0.Done | sl0.Failure | list[AgentDescription] | payload bruto
     """
-    payload = decode_content(msg)  # devolve SL0 AST ou string
+    payload = decode_content(msg)
+
+    # Desembrulha ContentElementList [(...)] → (...)
+    while isinstance(payload, list) and len(payload) == 1:
+        payload = payload[0]
 
     if isinstance(payload, str):
         return payload
@@ -150,10 +155,21 @@ def decode_df_reply(msg: AclMessage):
         return payload
 
     if isinstance(payload, sl0.Result):
-        # Tentativa de extrair resultados de search (lista de df-agent-description)
         return extract_search_results_from_value(payload.value) or payload
 
+    # Alguns DFs podem devolver diretamente lista de df-agent-description
+    if isinstance(payload, list):
+        # tenta mapear tudo para AgentDescription
+        ads = []
+        for it in payload:
+            if isinstance(it, sl0.DfAgentDescription):
+                from . import fipa_am
+                ads.append(fipa_am.from_sl0(it))  # type: ignore[arg-type]
+        if ads:
+            return ads
+
     return payload
+
 
 
 def is_df_done_msg(msg: AclMessage) -> bool:
