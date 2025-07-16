@@ -110,18 +110,38 @@ async def search_services(
     http_client: HttpMtpClient,
     df_url: Optional[str] = None,
 ) -> AclMessage:
-    tmpl = sl0.DfAgentDescription(
-        name=None,
-        services=[
-            sl0.ServiceDescription(name=service_name, type=service_type)
-        ] if (service_name is not None or service_type is not None) else [],
+    """
+    Envia REQUEST search ao DF.
+
+    JADE exige sempre o slot :constraints, por isso incluímos
+    (search-constraints :max-results X) — se max_results for None,
+    usamos -1 (ilimitado).
+    """
+    # constrói parte services (template)
+    svc_bits = []
+    if service_name is not None:
+        svc_bits.append(f":name {service_name}")
+    if service_type is not None:
+        svc_bits.append(f":type {service_type}")
+    svc_part = ""
+    if svc_bits:
+        svc_part = f":services (set (service-description {' '.join(svc_bits)}))"
+
+    # constraints
+    mr = -1 if max_results is None else max_results
+    constraints_part = f"(search-constraints :max-results {mr})"
+
+    content = (
+        f"((action (agent-identifier :name {df_aid.name} "
+        f":addresses (sequence {_first_url(df_aid)})) "
+        f"(search (df-agent-description {svc_part}) {constraints_part})))"
     )
-    inner = sl0.Action(actor=df_aid, act=sl0.Search(tmpl, max_results=max_results))
+
     msg = AclMessage(
         performative="request",
         sender=my_aid,
         receivers=[df_aid],
-        content=sl0.dumps(inner),
+        content=content,
         language="fipa-sl0",
         ontology="FIPA-Agent-Management",
         protocol="fipa-request",
