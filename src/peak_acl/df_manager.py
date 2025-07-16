@@ -1,234 +1,197 @@
 # src/peak_acl/df_manager.py
-"""
-Operações de alto nível sobre o Directory Facilitator (DF) FIPA,
-interoperáveis com JADE.
-
-Fornece construtores de mensagens ACL (register/deregister/search) e
-wrappers assíncronos que as enviam via HttpMtpClient.
-
-Depende de:
-    • peak_acl.message.acl.AclMessage
-    • peak_acl.message.aid.AgentIdentifier
-    • peak_acl.transport.http_client.HttpMtpClient
-    • peak_acl.sl0  (mini-implementação FIPA-SL0)
-    • peak_acl.content.decode_content  (para interpretar replies)
-
-Uso típico num agente:
-
-    from peak_acl.df_manager import register
-    await register(my_aid, df_aid, [("echo","generic")], http_client=client)
-
-Depois, no dispatcher inbound, podes usar `decode_df_reply()` ou
-`is_df_done_msg()` para saber se o DF confirmou.
-"""
-
 from __future__ import annotations
 
-import uuid
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Sequence, Tuple, Union, List
 
 from .message.aid import AgentIdentifier
 from .message.acl import AclMessage
 from .transport.http_client import HttpMtpClient
 from .content import decode_content
-from . import sl0
+from . import sl0, fipa_am
 
 __all__ = [
-    "build_register_msg",
-    "build_deregister_msg",
-    "build_search_msg",
-    "register",
-    "deregister",
-    "search_services",
-    "decode_df_reply",
-    "is_df_done_msg",
-    "is_df_failure_msg",
+    "register", "deregister", "search_services",
+    "decode_df_reply", "is_df_done_msg", "is_df_failure_msg",
+    "extract_search_results",
 ]
 
 
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
 # util
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
 def _first_url(ai: AgentIdentifier) -> str:
-    try:
-        return ai.addresses[0]
-    except IndexError as exc:
-        raise ValueError(f"AID sem endereço HTTP: {ai}") from exc
+    if not ai.addresses:
+        raise ValueError(f"AID sem endereço HTTP: {ai}")
+    return ai.addresses[0]
 
 
-def _new_tag(prefix: str = "") -> str:
-    return prefix + uuid.uuid4().hex
+def _coerce_services(
+    raw: Iterable[Union[Tuple[str, str], fipa_am.ServiceDescription]],
+) -> list[fipa_am.ServiceDescription]:
+    out: list[fipa_am.ServiceDescription] = []
+    for item in raw:
+        if isinstance(item, fipa_am.ServiceDescription):
+            out.append(item)
+        else:
+            n, t = item
+            out.append(fipa_am.ServiceDescription(name=n, type=t))
+    return out
 
 
-def _mk_request_msg(
-    *,
-    sender: AgentIdentifier,
-    receivers: Sequence[AgentIdentifier],
-    content_ast,
-    language: str = "fipa-sl0",
-    ontology: str = "FIPA-Agent-Management",
-    protocol: str = "fipa-request",
-    tag: Optional[str] = None,
-) -> AclMessage:
-    tag = tag or _new_tag(sender.name)
-    return AclMessage(
-        performative="request",
-        sender=sender,
-        receivers=list(receivers),
-        content=content_ast,
-        language=language,
-        ontology=ontology,
-        protocol=protocol,
-        conversation_id=tag,
-        reply_with=tag,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# construtores (retornam AclMessage; *não* enviam)
-# --------------------------------------------------------------------------- #
-def build_register_msg(
-    my_aid: AgentIdentifier,
-    df_aid: AgentIdentifier,
-    services: Sequence[Tuple[str, str]] = (),
-    *,
-    tag: Optional[str] = None,
-) -> AclMessage:
-    content_ast = sl0.Action(
-        actor=df_aid,
-        act=sl0.Register(
-            sl0.DfAgentDescription(
-                name=my_aid,
-                services=[sl0.ServiceDescription(name=n, type=t) for n, t in services],
-            )
-        ),
-    )
-    return _mk_request_msg(
-        sender=my_aid,
-        receivers=[df_aid],
-        content_ast=content_ast,
-        tag=tag,
-    )
-
-
-def build_deregister_msg(
-    my_aid: AgentIdentifier,
-    df_aid: AgentIdentifier,
-    *,
-    tag: Optional[str] = None,
-) -> AclMessage:
-    content_ast = sl0.Action(
-        actor=df_aid,
-        act=sl0.Deregister(
-            sl0.DfAgentDescription(name=my_aid, services=[]),
-        ),
-    )
-    return _mk_request_msg(
-        sender=my_aid,
-        receivers=[df_aid],
-        content_ast=content_ast,
-        tag=tag,
-    )
-
-
-def build_search_msg(
-    my_aid: AgentIdentifier,
-    df_aid: AgentIdentifier,
-    *,
-    service_name: Optional[str] = None,
-    service_type: Optional[str] = None,
-    max_results: Optional[int] = None,
-    tag: Optional[str] = None,
-) -> AclMessage:
-    # Template: apenas critérios fornecidos; name omitido (match wildcard no DF)
-    svcs = []
-    if service_name is not None or service_type is not None:
-        svcs.append(sl0.ServiceDescription(name=service_name, type=service_type))
-    # DfAgentDescription com nome None = wildcard (ver sl0.DfAgentDescription)
-    tmpl = sl0.DfAgentDescription(name=None, services=svcs)
-    content_ast = sl0.Action(
-        actor=df_aid,
-        act=sl0.Search(template=tmpl, max_results=max_results),
-    )
-    return _mk_request_msg(
-        sender=my_aid,
-        receivers=[df_aid],
-        content_ast=content_ast,
-        tag=tag,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# wrappers que enviam
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+# builders + envio
+# ------------------------------------------------------------------ #
 async def register(
+    *,
     my_aid: AgentIdentifier,
     df_aid: AgentIdentifier,
-    services: Optional[Sequence[Tuple[str, str]]] = None,
-    *,
+    services: Iterable[Union[Tuple[str, str], fipa_am.ServiceDescription]] = (),
+    languages: Sequence[str] = (),
+    ontologies: Sequence[str] = (),
+    protocols: Sequence[str] = (),
+    ownership: Sequence[str] = (),
     http_client: HttpMtpClient,
-    df_url: Optional[str] = None,
-    tag: Optional[str] = None,
 ) -> AclMessage:
-    msg = build_register_msg(my_aid, df_aid, services or (), tag=tag)
-    await http_client.send(df_aid, my_aid, msg, df_url or _first_url(df_aid))
+    svc_objs = _coerce_services(services)
+    ad = fipa_am.build_agent_description(
+        aid=my_aid,
+        services=svc_objs,
+        languages=languages,
+        ontologies=ontologies,
+        protocols=protocols,
+        ownership=ownership,
+    )
+    content = fipa_am.render_register_content(df_aid, ad)
+    msg = AclMessage(
+        performative="request",
+        sender=my_aid,
+        receivers=[df_aid],
+        content=content,
+        language="fipa-sl0",
+        ontology="FIPA-Agent-Management",
+        protocol="fipa-request",
+    )
+    await http_client.send(df_aid, my_aid, msg, _first_url(df_aid))
     return msg
 
 
 async def deregister(
+    *,
     my_aid: AgentIdentifier,
     df_aid: AgentIdentifier,
-    *,
     http_client: HttpMtpClient,
-    df_url: Optional[str] = None,
-    tag: Optional[str] = None,
 ) -> AclMessage:
-    msg = build_deregister_msg(my_aid, df_aid, tag=tag)
-    await http_client.send(df_aid, my_aid, msg, df_url or _first_url(df_aid))
+    ad = fipa_am.AgentDescription(name=my_aid)
+    inner = sl0.Action(actor=df_aid, act=sl0.Deregister(sl0.DfAgentDescription(name=my_aid)))
+    msg = AclMessage(
+        performative="request",
+        sender=my_aid,
+        receivers=[df_aid],
+        content=sl0.dumps(inner),
+        language="fipa-sl0",
+        ontology="FIPA-Agent-Management",
+        protocol="fipa-request",
+    )
+    await http_client.send(df_aid, my_aid, msg, _first_url(df_aid))
     return msg
 
 
 async def search_services(
+    *,
     my_aid: AgentIdentifier,
     df_aid: AgentIdentifier,
-    *,
     service_name: Optional[str] = None,
     service_type: Optional[str] = None,
     max_results: Optional[int] = None,
     http_client: HttpMtpClient,
-    df_url: Optional[str] = None,
-    tag: Optional[str] = None,
 ) -> AclMessage:
-    msg = build_search_msg(
-        my_aid,
-        df_aid,
-        service_name=service_name,
-        service_type=service_type,
-        max_results=max_results,
-        tag=tag,
+    tmpl = sl0.DfAgentDescription(
+        name=None,
+        services=[
+            sl0.ServiceDescription(name=service_name, type=service_type)
+        ] if (service_name is not None or service_type is not None) else [],
     )
-    await http_client.send(df_aid, my_aid, msg, df_url or _first_url(df_aid))
+    inner = sl0.Action(actor=df_aid, act=sl0.Search(tmpl, max_results=max_results))
+    msg = AclMessage(
+        performative="request",
+        sender=my_aid,
+        receivers=[df_aid],
+        content=sl0.dumps(inner),
+        language="fipa-sl0",
+        ontology="FIPA-Agent-Management",
+        protocol="fipa-request",
+    )
+    await http_client.send(df_aid, my_aid, msg, _first_url(df_aid))
     return msg
 
 
-# --------------------------------------------------------------------------- #
-# helpers para replies do DF
-# --------------------------------------------------------------------------- #
+# ------------------------------------------------------------------ #
+# Decodificar replies DF
+# ------------------------------------------------------------------ #
 def decode_df_reply(msg: AclMessage):
     """
-    Decodifica msg.content se language for SL (fipa-sl0,...).
-    Devolve AST SL0 (Done/Failure/Action/Result/...) ou string original.
+    Converte msg.content (string) -> AST SL0 -> objetos ontologia quando aplicável.
     """
-    return decode_content(msg)
+    payload = decode_content(msg)  # str -> sl0 AST (ou str se parse falhar)
+
+    # Se parser SL0 falhou ou language != fipa-sl*, devolve raw
+    if isinstance(payload, str):
+        return payload
+
+    # Se Done/Failure/Result, devolve instâncias fipa_am se possível
+    if isinstance(payload, sl0.Done):
+        return payload  # Done(Action(...))
+    if isinstance(payload, sl0.Failure):
+        return payload
+    if isinstance(payload, sl0.Result):
+        # tentar mapear value -> AgentDescription(s)
+        val = payload.value
+        ads = extract_search_results_from_value(val)
+        if ads is not None:
+            # devolve lista de AgentDescription
+            return ads
+        return payload
+
+    # fallback
+    return payload
 
 
-def is_df_done_msg(msg: AclMessage) -> bool:
-    from . import sl0  # local import
-    payload = decode_df_reply(msg)
-    return isinstance(payload, sl0.Done)
+def extract_search_results(msg: AclMessage) -> List[fipa_am.AgentDescription]:
+    """
+    Se a mensagem for uma resposta a search, devolve lista de AgentDescription.
+    Caso contrário devolve [].
+    """
+    payload = decode_content(msg)
+    if isinstance(payload, sl0.Result):
+        ads = extract_search_results_from_value(payload.value)
+        return ads or []
+    return []
 
 
-def is_df_failure_msg(msg: AclMessage) -> bool:
-    from . import sl0
-    payload = decode_df_reply(msg)
-    return isinstance(payload, sl0.Failure)
+def extract_search_results_from_value(val) -> Optional[List[fipa_am.AgentDescription]]:
+    """
+    Recebe payload.value dum Result SL0; tenta extrair lista de ADs.
+    """
+    def _coerce(obj):
+        if isinstance(obj, sl0.DfAgentDescription):
+            return fipa_am._ad_from_sl0(obj)  # tipo: ignore[attr-defined]
+        return None
+
+    items: List[fipa_am.AgentDescription] = []
+
+    # value pode ser list ['set', dfad,...] ou lista de dfad
+    if isinstance(val, list):
+        if val and isinstance(val[0], str) and val[0].lower() == "set":
+            seq = val[1:]
+        else:
+            seq = val
+        for it in seq:
+            it2 = _coerce(it if isinstance(it, sl0.DfAgentDescription) else sl0._build_ast(it))  # noqa
+            if it2:
+                items.append(it2)
+    elif isinstance(val, sl0.DfAgentDescription):
+        items.append(fipa_am._ad_from_sl0(val))  # noqa
+    else:
+        return None
+
+    return items
