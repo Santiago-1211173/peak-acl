@@ -2,8 +2,6 @@
 from antlr4 import InputStream, CommonTokenStream
 from .generated.ACLLexer import ACLLexer
 from .generated.ACLParser import ACLParser
-
-# importa o visitor que constrói AclMessage
 from .visitor import MessageBuilder
 
 def parse(raw: str):
