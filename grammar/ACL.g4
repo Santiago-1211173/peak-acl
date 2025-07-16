@@ -35,6 +35,6 @@ COLON   : ':' ;
 STRING  : '"' (~["\\]  | '\\' .)* '"' ;
 
 // Inclui @ . / : + - para AIDs e URLs
-SYMBOL  : [a-zA-Z0-9_@./:+\\-][a-zA-Z0-9_@./:+\\-]* ;
+SYMBOL  : [a-zA-Z0-9_@./+\-] [a-zA-Z0-9_@./:+\-]* ;
 
 WS      : [ \t\r\n]+ -> skip ;
