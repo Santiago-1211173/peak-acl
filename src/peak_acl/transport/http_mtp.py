@@ -1,24 +1,39 @@
 """
 http_mtp.py
 ───────────
-Implementa o lado servidor do FIPA HTTP-MTP em cima de *aiohttp*.
+Servidor **INBOUND** FIPA HTTP‑MTP baseado em *aiohttp*.
 
-• NÃO herda de `web.Application`  ➜ compatível com futuras versões 4.x
-• Middleware de logging + captura de erros → HTTP 400
-• Valida Content-Type = multipart/mixed; extrai envelope + ACL
-• Chama um callback assíncrono `on_message(env, acl)`
+JADE envia mensagens multipart/mixed **sem** cabeçalhos Content‑Disposition
+e sem nomes de parte; o parser multipart do aiohttp não consegue mapear
+automaticamente "envelope" / "acl-message". Este módulo faz portanto um
+**parsing manual tolerante** do corpo raw:
+
+    --BOUNDARY
+    Content-Type: application/xml
+
+    <envelope>...</envelope>
+    --BOUNDARY
+    Content-Type: text/plain
+
+    (ACL ...)
+    --BOUNDARY--
+
+Depois de extrair as duas partes, converte para `Envelope` e `AclMessage`.
+Cada mensagem válida é *sempre* colocada em `self.inbox` (asyncio.Queue).
+Opcionalmente, também chama um callback `on_message(env, acl)` se fornecido.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Tuple
 
 from aiohttp import web
-import asyncio
+import asyncio, re
 
 from ..message.envelope import Envelope
+from ..message.acl import AclMessage
 from ..parse import parse
 
 __all__ = ["HttpMtpServer"]
@@ -29,6 +44,40 @@ _LOG = logging.getLogger("peak_acl.http_mtp")
 MAX_REQUEST_SIZE = 5 * 1024 * 1024  # 5 MiB
 ACC_ENDPOINT = "/acc"               # caminho padrão do JADE/DF
 
+_BOUNDARY_RE = re.compile(r'boundary="?([^";]+)"?', re.IGNORECASE)
+
+
+def _split_jade_multipart(raw: bytes, boundary: bytes) -> Tuple[str, str]:
+    """
+    Extrai (env_xml_str, acl_str) de um corpo multipart estilo JADE.
+    Lança ValueError se algo não bater certo.
+    """
+    marker = b"--" + boundary
+    segments = raw.split(marker)
+    parts = []
+    for seg in segments[1:]:
+        seg = seg.lstrip(b"\r\n")
+        if seg.startswith(b"--"):  # terminador
+            break
+        if not seg:
+            continue
+        parts.append(seg)
+    if len(parts) < 2:
+        raise ValueError(f"Esperava >=2 partes, obtive {len(parts)}")
+
+    def _payload(block: bytes) -> bytes:
+        if b"\r\n\r\n" not in block:
+            raise ValueError("Parte sem cabeçalho CRLF CRLF")
+        _hdr, payload = block.split(b"\r\n\r\n", 1)
+        return payload.rstrip(b"\r\n")
+
+    env_payload = _payload(parts[0])
+    acl_payload = _payload(parts[1])
+
+    env_xml = env_payload.decode("utf-8", errors="replace").strip()
+    acl_str = acl_payload.decode("utf-8", errors="replace").strip()
+    return env_xml, acl_str
+
 
 class HttpMtpServer:
     """
@@ -37,8 +86,8 @@ class HttpMtpServer:
     Parameters
     ----------
     on_message
-        Callback assíncrono chamado para cada mensagem válida:
-        ``async def on_message(env: Envelope, acl: AclMessage) -> None``.
+        *Opcional.* Callback assíncrono chamado para cada mensagem válida.
+        Se omitido, apenas a fila interna `self.inbox` é usada.
     client_max_size
         Tamanho máximo do corpo (bytes).  Padrão = 5 MiB.
     """
@@ -46,12 +95,13 @@ class HttpMtpServer:
     # ---------------------------------------------------------------------
     def __init__(
         self,
-        on_message: Callable[[Envelope, "AclMessage"], Awaitable[None]],
+        on_message: Optional[Callable[[Envelope, AclMessage], Awaitable[None]]] = None,
         *,
         client_max_size: int = MAX_REQUEST_SIZE,
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self._on_message = on_message
+        self.inbox: asyncio.Queue[Tuple[Envelope, AclMessage]] = asyncio.Queue()
 
         self.app: web.Application = web.Application(
             client_max_size=client_max_size, loop=loop
@@ -92,31 +142,33 @@ class HttpMtpServer:
     #                          HANDLER                                    #
     # ------------------------------------------------------------------ #
     async def _handle_mtp(self, request: web.Request) -> web.StreamResponse:
-        # 1) Validar Content-Type
+        # Ler corpo bruto
+        raw = await request.read()
+
+        # Extrair boundary
         ctype = request.headers.get("Content-Type", "")
-        if not ctype.startswith("multipart/mixed"):
+        if not ctype.lower().startswith("multipart/mixed"):
             raise web.HTTPUnsupportedMediaType(text="Esperava multipart/mixed")
+        m = _BOUNDARY_RE.search(ctype)
+        if not m:
+            raise web.HTTPBadRequest(text="Falta boundary no Content-Type")
+        boundary = m.group(1).encode("utf-8")
 
-        # 2) Ler partes
         try:
-            reader = await request.multipart()
-        except ValueError as e:
-            raise web.HTTPBadRequest(text=str(e)) from e
+            env_xml, acl_str = _split_jade_multipart(raw, boundary)
+            env = Envelope.from_xml(env_xml)
+            acl = parse(acl_str)
+        except Exception as exc:
+            _LOG.exception("Falha a processar HTTP-MTP inbound")
+            raise web.HTTPBadRequest(text=str(exc)) from exc
 
-        parts: dict[str, str] = {}
-        async for part in reader:
-            if part.name in {"envelope", "acl-message"}:
-                parts[part.name] = await part.text()
+        # Coloca sempre na inbox interna
+        await self.inbox.put((env, acl))
 
-        if "envelope" not in parts or "acl-message" not in parts:
-            raise web.HTTPBadRequest(text="Falta envelope ou acl-message")
+        # Opcionalmente chama callback
+        if self._on_message is not None:
+            await self._on_message(env, acl)
 
-        # 3) Parse envelope + ACL
-        env = Envelope.from_xml(parts["envelope"])
-        acl = parse(parts["acl-message"])
-
-        # 4) Entregar ao callback
-        await self._on_message(env, acl)
         return web.Response(text="ok", status=200)
 
     # ------------------------------------------------------------------ #

@@ -77,13 +77,6 @@ class HttpMtpClient:
         delay = self.backoff_base
         while True:
             try:
-                print("──── Cabeçalhos HTTP enviados ────")
-                for k, v in headers.items():
-                    print(f"{k}: {v}")
-                print("──── Início do corpo (primeiros 400 bytes) ────")
-                print(body[:400].decode("utf-8", errors="replace"))
-                print("──── Fim debug ────")
-
                 async with self.session.post(acc_url, data=body, headers=headers) as resp:
                     if resp.status == 200:
                         _LOG.info("Enviado para %s (status 200)", acc_url)
