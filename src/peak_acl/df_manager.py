@@ -51,6 +51,7 @@ async def register(
     protocols: Sequence[str] = (),
     ownership: Sequence[str] = (),
     http_client: HttpMtpClient,
+    df_url: Optional[str] = None,   # <<< retro-compatível; ignorado se None
 ) -> AclMessage:
     svc_objs = _coerce_services(services)
     ad = fipa_am.build_agent_description(
@@ -71,7 +72,7 @@ async def register(
         ontology="FIPA-Agent-Management",
         protocol="fipa-request",
     )
-    await http_client.send(df_aid, my_aid, msg, _first_url(df_aid))
+    await http_client.send(df_aid, my_aid, msg, df_url or _first_url(df_aid))
     return msg
 
 
@@ -80,9 +81,12 @@ async def deregister(
     my_aid: AgentIdentifier,
     df_aid: AgentIdentifier,
     http_client: HttpMtpClient,
+    df_url: Optional[str] = None,
 ) -> AclMessage:
-    ad = fipa_am.AgentDescription(name=my_aid)
-    inner = sl0.Action(actor=df_aid, act=sl0.Deregister(sl0.DfAgentDescription(name=my_aid)))
+    inner = sl0.Action(
+        actor=df_aid,
+        act=sl0.Deregister(sl0.DfAgentDescription(name=my_aid)),
+    )
     msg = AclMessage(
         performative="request",
         sender=my_aid,
@@ -92,7 +96,7 @@ async def deregister(
         ontology="FIPA-Agent-Management",
         protocol="fipa-request",
     )
-    await http_client.send(df_aid, my_aid, msg, _first_url(df_aid))
+    await http_client.send(df_aid, my_aid, msg, df_url or _first_url(df_aid))
     return msg
 
 
@@ -104,6 +108,7 @@ async def search_services(
     service_type: Optional[str] = None,
     max_results: Optional[int] = None,
     http_client: HttpMtpClient,
+    df_url: Optional[str] = None,
 ) -> AclMessage:
     tmpl = sl0.DfAgentDescription(
         name=None,
@@ -121,7 +126,7 @@ async def search_services(
         ontology="FIPA-Agent-Management",
         protocol="fipa-request",
     )
-    await http_client.send(df_aid, my_aid, msg, _first_url(df_aid))
+    await http_client.send(df_aid, my_aid, msg, df_url or _first_url(df_aid))
     return msg
 
 
@@ -130,36 +135,40 @@ async def search_services(
 # ------------------------------------------------------------------ #
 def decode_df_reply(msg: AclMessage):
     """
-    Converte msg.content (string) -> AST SL0 -> objetos ontologia quando aplicável.
+    Converte msg.content (string) -> AST SL0; devolve Done/Failure/Result
+    ou string original se parsing falhar.
     """
-    payload = decode_content(msg)  # str -> sl0 AST (ou str se parse falhar)
+    payload = decode_content(msg)  # devolve SL0 AST ou string
 
-    # Se parser SL0 falhou ou language != fipa-sl*, devolve raw
     if isinstance(payload, str):
         return payload
 
-    # Se Done/Failure/Result, devolve instâncias fipa_am se possível
     if isinstance(payload, sl0.Done):
-        return payload  # Done(Action(...))
-    if isinstance(payload, sl0.Failure):
-        return payload
-    if isinstance(payload, sl0.Result):
-        # tentar mapear value -> AgentDescription(s)
-        val = payload.value
-        ads = extract_search_results_from_value(val)
-        if ads is not None:
-            # devolve lista de AgentDescription
-            return ads
         return payload
 
-    # fallback
+    if isinstance(payload, sl0.Failure):
+        return payload
+
+    if isinstance(payload, sl0.Result):
+        # Tentativa de extrair resultados de search (lista de df-agent-description)
+        return extract_search_results_from_value(payload.value) or payload
+
     return payload
+
+
+def is_df_done_msg(msg: AclMessage) -> bool:
+    from . import sl0 as _sl0
+    return isinstance(decode_df_reply(msg), _sl0.Done)
+
+
+def is_df_failure_msg(msg: AclMessage) -> bool:
+    from . import sl0 as _sl0
+    return isinstance(decode_df_reply(msg), _sl0.Failure)
 
 
 def extract_search_results(msg: AclMessage) -> List[fipa_am.AgentDescription]:
     """
-    Se a mensagem for uma resposta a search, devolve lista de AgentDescription.
-    Caso contrário devolve [].
+    Se a mensagem for resultado de search, devolve lista de AgentDescription.
     """
     payload = decode_content(msg)
     if isinstance(payload, sl0.Result):
@@ -172,26 +181,29 @@ def extract_search_results_from_value(val) -> Optional[List[fipa_am.AgentDescrip
     """
     Recebe payload.value dum Result SL0; tenta extrair lista de ADs.
     """
-    def _coerce(obj):
-        if isinstance(obj, sl0.DfAgentDescription):
-            return fipa_am._ad_from_sl0(obj)  # tipo: ignore[attr-defined]
-        return None
+    from . import sl0 as _sl0
 
-    items: List[fipa_am.AgentDescription] = []
+    ads: List[fipa_am.AgentDescription] = []
 
-    # value pode ser list ['set', dfad,...] ou lista de dfad
+    if isinstance(val, _sl0.DfAgentDescription):
+        ads.append(fipa_am.from_sl0(val))  # type: ignore[arg-type]
+        return ads
+
+    # val pode ser ['set', dfad,...] ou lista pura; ou AST parseado (lista python)
     if isinstance(val, list):
-        if val and isinstance(val[0], str) and val[0].lower() == "set":
-            seq = val[1:]
-        else:
-            seq = val
-        for it in seq:
-            it2 = _coerce(it if isinstance(it, sl0.DfAgentDescription) else sl0._build_ast(it))  # noqa
-            if it2:
-                items.append(it2)
-    elif isinstance(val, sl0.DfAgentDescription):
-        items.append(fipa_am._ad_from_sl0(val))  # noqa
-    else:
-        return None
+        items = val[1:] if val and isinstance(val[0], str) and val[0].lower() == "set" else val
+        for it in items:
+            # se já é DfAgentDescription
+            if isinstance(it, _sl0.DfAgentDescription):
+                ads.append(fipa_am.from_sl0(it))  # type: ignore[arg-type]
+            else:
+                # tenta reconstruir AST e converter
+                try:
+                    obj = _sl0._build_ast(it)  # pyright: ignore [reportPrivateUsage]
+                    if isinstance(obj, _sl0.DfAgentDescription):
+                        ads.append(fipa_am.from_sl0(obj))  # type: ignore[arg-type]
+                except Exception:
+                    pass
+        return ads if ads else None
 
-    return items
+    return None

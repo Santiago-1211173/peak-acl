@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: peak-acl
-Version: 0.2.0
+Version: 0.2.1
 Summary: FIPA-ACL parser and transport for the PEAK framework
 Author-email: Santiago Bossa <1211173@isep.ipp.pt>
 License: MIT
