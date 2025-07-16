@@ -3,6 +3,7 @@ pyproject.toml
 src/peak_acl/__init__.py
 src/peak_acl/df_manager.py
 src/peak_acl/parse.py
+src/peak_acl/parse_helpers.py
 src/peak_acl/runtime.py
 src/peak_acl/serialize.py
 src/peak_acl/types.py
