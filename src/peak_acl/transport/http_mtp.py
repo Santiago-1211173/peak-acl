@@ -191,3 +191,21 @@ class HttpMtpServer:
             await web._run_app(self.app)  # type: ignore[attr-defined]
         finally:
             await runner.cleanup()
+
+async def start_server(
+    *,
+    on_message=None,
+    bind_host: str = "0.0.0.0",
+    port: int = 7777,
+    client_max_size: int = MAX_REQUEST_SIZE,
+    loop=None,
+):
+    """Convenience: cria HttpMtpServer + arranca-o; devolve (server, runner, site)."""
+    server = HttpMtpServer(on_message=on_message, client_max_size=client_max_size, loop=loop)
+    runner = web.AppRunner(server.app)
+    await runner.setup()
+    site = web.TCPSite(runner, bind_host, port)
+    await site.start()
+    _LOG.info("HttpMtpServer escutar em %s:%d%s", bind_host, port, ACC_ENDPOINT)
+    return server, runner, site
+        
