@@ -12,7 +12,7 @@ license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = [
     "antlr4-python3-runtime>=4.13",
-    "aiohttp = 3.7",
+    "aiohttp >= 3.7 ",
     "datetime >= 4.7",
 ]
 
