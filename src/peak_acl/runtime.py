@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Sequence, Tuple, Optional, Iterable, Union
+from typing import Sequence, Tuple, Optional, Iterable, Union, AsyncIterator
 
 import aiohttp.web
 
@@ -12,7 +12,7 @@ from .message.acl import AclMessage
 from .transport.http_mtp import HttpMtpServer, start_server
 from .transport.http_client import HttpMtpClient
 from . import df_manager, sl0
-
+from . import events, router            # ←  NOVOS módulos
 
 # ------------------------------------------------------------------ #
 # util
@@ -27,7 +27,7 @@ def _first_url(ai: AgentIdentifier) -> str:
 # Endpoint de comunicação (server inbound + client outbound)
 # ------------------------------------------------------------------ #
 @dataclass
-class CommEndpoint:
+class CommEndpoint(AsyncIterator[events.MsgEvent]):
     my_aid: AgentIdentifier
     inbox: asyncio.Queue                 # fila inbound (Envelope, AclMessage)
     client: HttpMtpClient                # outbound
@@ -38,6 +38,7 @@ class CommEndpoint:
 
     # ------------------- DF helpers ---------------------------------- #
     async def register_df(self, df_aid, services, *,
+
                           df_url=None, languages=(), ontologies=(),
                           protocols=(), ownership=()):
         """Envia REQUEST register ao DF."""
@@ -136,11 +137,21 @@ class CommEndpoint:
             reply_by=reply_by,
         )
 
-        # Envia 1 POST por recetor (envelope ponto-a-ponto)
+        # Envia 1 POST por recetor (envelope ponto‑a‑ponto)
         for r in receivers:
             await self.client.send(r, self.my_aid, msg, _first_url(r))
 
         return msg
+
+    # ----------------------- iterator interface ---------------------- #
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> events.MsgEvent:        # noqa: D401
+        """Bloqueia até chegar uma mensagem e devolve MsgEvent."""
+        env, acl = await self.inbox.get()
+        kind, payload = router.classify_message(env, acl, self.df_aid)
+        return events.MsgEvent(env, acl, env.from_, kind, payload)
 
     # ------------------------------------------------------------------ #
     async def close(self):
